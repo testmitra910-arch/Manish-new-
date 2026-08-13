@@ -11,15 +11,13 @@ permissions:
 
 jobs:
   build:
-    name: Build TEST MITRA APK
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -27,149 +25,32 @@ jobs:
 
       - name: Find ZIP
         run: |
-          set -e
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: ZIP file not found"
+          ZIP=$(find . -maxdepth 2 -type f -name "*.zip" | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "ZIP file not found"
             exit 1
           fi
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP_FILE"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
-      - name: Extract ZIP
+      - name: Extract
         run: |
-          set -e
           rm -rf extracted
-          mkdir -p extracted
-          unzip -o "$ZIP_FILE" -d extracted
-          echo "ZIP extracted successfully"
+          mkdir extracted
+          unzip -o "$ZIP" -d extracted
 
-      - name: Find Android Project
+      - name: Find Gradle Project
         run: |
-          set -e
-
-          SETTINGS=$(find extracted -type f \
-            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-            | head -n 1)
-
-          if [ -n "$SETTINGS" ]; then
-            PROJECT_DIR=$(dirname "$SETTINGS")
-          else
-            BUILD=$(find extracted -type f \
-              \( -name "build.gradle.kts" -o -name "build.gradle" \) \
-              | head -n 1)
-
-            if [ -z "$BUILD" ]; then
-              echo "ERROR: Gradle project not found"
-              exit 1
-            fi
-
-            PROJECT_DIR=$(dirname "$BUILD")
+          FILE=$(find extracted -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
+          if [ -z "$FILE" ]; then
+            FILE=$(find extracted -type f \( -name "build.gradle.kts" -o -name "build.gradle" \) | head -1)
           fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT_DIR"
-
-      - name: Remove Google Services
-        run: |
-          set -e
-
-          for FILE in \
-            "$PROJECT_DIR/app/build.gradle.kts" \
-            "$PROJECT_DIR/build.gradle.kts" \
-            "$PROJECT_DIR/settings.gradle.kts"
-          do
-            if [ -f "$FILE" ]; then
-              sed -i '/MissingGoogleServicesStrategy/d' "$FILE"
-              sed -i '/com.google.gms.google-services/d' "$FILE"
-              sed -i '/com.google.gms.googleServices/d' "$FILE"
-            fi
-          done
-
-      - name: Remove Google Services Blocks
-        run: |
-          set -e
-
-          APP="$PROJECT_DIR/app/build.gradle.kts"
-
-          if [ -f "$APP" ]; then
-            sed -i '/^[[:space:]]*gms[[:space:]]*{/d' "$APP"
-            sed -i '/^[[:space:]]*googleServices[[:space:]]*{/d' "$APP"
-            sed -i '/missingGoogleServicesStrategy/d' "$APP"
+          if [ -z "$FILE" ]; then
+            echo "Gradle project not found"
+            exit 1
           fi
-
-      - name: Enable AndroidX
-        run: |
-          set -e
-
-          touch "$PROJECT_DIR/gradle.properties"
-
-          grep -q "android.useAndroidX=true" \
-            "$PROJECT_DIR/gradle.properties" || \
-            echo "android.useAndroidX=true" >> "$PROJECT_DIR/gradle.properties"
-
-          grep -q "android.enableJetifier=true" \
-            "$PROJECT_DIR/gradle.properties" || \
-            echo "android.enableJetifier=true" >> "$PROJECT_DIR/gradle.properties"
-
-          grep -q "org.gradle.configuration-cache=false" \
-            "$PROJECT_DIR/gradle.properties" || \
-            echo "org.gradle.configuration-cache=false" >> "$PROJECT_DIR/gradle.properties"
-
-      - name: Add Compose Dependencies
-        run: |
-          set -e
-
-          APP="$PROJECT_DIR/app/build.gradle.kts"
-
-          if ! grep -q 'androidx.activity:activity-compose' "$APP"; then
-            sed -i '$i\    implementation("androidx.activity:activity-compose:1.10.1")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.core:core-ktx' "$APP"; then
-            sed -i '$i\    implementation("androidx.core:core-ktx:1.15.0")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.compose.ui:ui' "$APP"; then
-            sed -i '$i\    implementation("androidx.compose.ui:ui")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.compose.material3:material3' "$APP"; then
-            sed -i '$i\    implementation("androidx.compose.material3:material3")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.compose.runtime:runtime' "$APP"; then
-            sed -i '$i\    implementation("androidx.compose.runtime:runtime")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.compose.foundation:foundation' "$APP"; then
-            sed -i '$i\    implementation("androidx.compose.foundation:foundation")' "$APP"
-          fi
-
-          if ! grep -q 'androidx.lifecycle:lifecycle-runtime-compose' "$APP"; then
-            sed -i '$i\    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")' "$APP"
-          fi
-
-      - name: Enable Compose
-        run: |
-          set -e
-
-          APP="$PROJECT_DIR/app/build.gradle.kts"
-
-          if ! grep -q "compose = true" "$APP"; then
-            sed -i '/android {/a\
-    buildFeatures {\
-        compose = true\
-    }' "$APP"
-          fi
-
-      - name: Show Project
-        run: |
-          echo "===== PROJECT ====="
-          echo "$PROJECT_DIR"
-
-          echo "===== APP BUILD ====="
-          cat "$PROJECT_DIR/app/build.gradle.kts"
+          DIR=$(dirname "$FILE")
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Project: $DIR"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -178,54 +59,27 @@ jobs:
 
       - name: Check Gradle
         run: |
+          cd "$PROJECT_DIR"
           gradle --version
 
-      - name: Clean Project
+      - name: Build APK
         run: |
-          set -e
           cd "$PROJECT_DIR"
-
-          rm -rf .gradle
-          rm -rf build
-          rm -rf app/build
-
-          gradle clean \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace
-
-      - name: Build Debug APK
-        run: |
-          set -e
-          cd "$PROJECT_DIR"
-
-          gradle assembleDebug \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Find APK
         run: |
-          set -e
-
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f -name "*.apk" | head -n 1)
-
+          APK=$(find "$PROJECT_DIR" -type f -name "*.apk" | head -1)
           if [ -z "$APK" ]; then
-            echo "ERROR: APK not found"
+            echo "APK not found"
             exit 1
           fi
-
-          mkdir -p apk-output
-          cp "$APK" apk-output/TEST-MITRA-debug.apk
-
-          echo "APK CREATED SUCCESSFULLY"
-          ls -lh apk-output/TEST-MITRA-debug.apk
+          mkdir -p apk
+          cp "$APK" apk/TEST-MITRA-debug.apk
+          echo "APK created successfully"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: TEST-MITRA-debug-apk
-          path: apk-output/TEST-MITRA-debug.apk
-          if-no-files-found: error
-          retention-days: 30
+          path: apk/TEST-MITRA-debug.apk
