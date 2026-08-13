@@ -12,10 +12,11 @@ permissions:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build TEST MITRA APK
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -25,27 +26,76 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Find project folder
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Searching for Gradle project..."
+          echo "Finding project ZIP..."
 
-          PROJECT_DIR=$(find . -type f \( \
-            -name "settings.gradle.kts" -o \
-            -name "settings.gradle" \
-          \) -not -path "./.git/*" | head -n 1 | xargs -r dirname)
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Gradle project not found."
-            echo "Files in repository:"
-            find . -maxdepth 4 -type f | head -200
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP file not found."
             exit 1
           fi
 
-          echo "Gradle project: $PROJECT_DIR"
+          echo "ZIP found: $ZIP_FILE"
+
+          rm -rf project
+          mkdir -p project
+
+          unzip -o "$ZIP_FILE" -d project
+
+          echo "ZIP extracted."
+
+          echo "Searching Gradle project..."
+
+          SETTINGS_FILE=$(find project -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            -not -path "*/.git/*" | head -n 1)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Gradle settings file not found."
+            echo "Extracted files:"
+            find project -maxdepth 5 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo "Gradle project found:"
+          echo "$PROJECT_DIR"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Remove broken Google Services configuration
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "app/build.gradle.kts" ]; then
+
+            sed -i '/import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy/d' app/build.gradle.kts
+
+            sed -i '/^[[:space:]]*googleServices[[:space:]]*{/d' app/build.gradle.kts
+            sed -i '/MissingGoogleServicesStrategy.WARN/d' app/build.gradle.kts
+            sed -i '/^[[:space:]]*}[[:space:]]*$/d' /dev/null 2>/dev/null || true
+
+            echo "Google Services configuration cleaned."
+          fi
+
+      - name: Find Gradle wrapper
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "Gradle wrapper found."
+          else
+            echo "Gradle wrapper not found. System Gradle will be used."
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -55,8 +105,6 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          chmod +x gradlew 2>/dev/null || true
 
           if [ -f "./gradlew" ]; then
             ./gradlew --no-daemon --stacktrace :app:assembleDebug
@@ -78,7 +126,10 @@ jobs:
             exit 1
           fi
 
-          echo "APK successfully created:"
+          echo "===================================="
+          echo "APK BUILD SUCCESSFUL"
+          echo "===================================="
+
           ls -lh "$APK"
 
       - name: Upload APK
