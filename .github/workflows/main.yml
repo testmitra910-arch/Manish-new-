@@ -27,14 +27,44 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Find ZIP
+        shell: bash
+        run: |
+          echo "===== ZIP FILES ====="
+          find . -maxdepth 2 -type f -iname "*.zip" -print
+
+      - name: Extract Android Project
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
+          fi
+
+          echo "Using ZIP:"
+          echo "$ZIP_FILE"
+
+          mkdir -p extracted
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo "===== EXTRACTED FILES ====="
+          find extracted -maxdepth 5 -type f | sort
+
       - name: Find Android Gradle Project
         shell: bash
         run: |
-          echo "Searching for Gradle project..."
+          set -e
+
+          echo "Searching extracted project..."
 
           PROJECT_DIR=""
 
-          SETTINGS_FILE=$(find . -type f \( \
+          SETTINGS_FILE=$(find extracted -type f \( \
             -name "settings.gradle" \
             -o -name "settings.gradle.kts" \
           \) -print -quit)
@@ -44,7 +74,7 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            BUILD_FILE=$(find . -type f \( \
+            BUILD_FILE=$(find extracted -type f \( \
               -name "build.gradle" \
               -o -name "build.gradle.kts" \
             \) -print -quit)
@@ -55,21 +85,19 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No Gradle project was found."
+            echo "ERROR: Android Gradle project was not found inside ZIP."
             echo ""
-            echo "Repository files:"
-            find . -maxdepth 6 -type f | sort
+            echo "All extracted files:"
+            find extracted -type f | sort
             exit 1
           fi
 
-          PROJECT_DIR="${PROJECT_DIR#./}"
-
-          echo "Gradle project found at:"
+          echo "Android Gradle project found:"
           echo "$PROJECT_DIR"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Show Project Files
+      - name: Show Project
         shell: bash
         run: |
           echo "===== PROJECT DIRECTORY ====="
@@ -83,25 +111,6 @@ jobs:
         shell: bash
         run: |
           gradle --version
-
-      - name: Check Android Project
-        shell: bash
-        run: |
-          if [ -f "$PROJECT_DIR/settings.gradle" ]; then
-            echo "Found settings.gradle"
-          elif [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "Found settings.gradle.kts"
-          else
-            echo "WARNING: settings.gradle not found"
-          fi
-
-          if [ -f "$PROJECT_DIR/build.gradle" ]; then
-            echo "Found build.gradle"
-          fi
-
-          if [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            echo "Found build.gradle.kts"
-          fi
 
       - name: Clean Project
         shell: bash
@@ -126,5 +135,5 @@ jobs:
         with:
           name: TEST-MITRA-APK
           path: |
-            **/build/outputs/apk/**/*.apk
+            extracted/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
