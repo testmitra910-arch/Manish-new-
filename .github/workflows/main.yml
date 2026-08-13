@@ -17,124 +17,239 @@ jobs:
 
     steps:
 
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Extract project ZIP
+      - name: Find and extract ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Finding project ZIP..."
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
-
-          if [ -z "$ZIP_FILE" ]; then
+          if [ -z "$ZIP" ]; then
             echo "ERROR: ZIP file not found."
             exit 1
           fi
 
-          echo "ZIP found: $ZIP_FILE"
+          echo "ZIP found: $ZIP"
 
-          rm -rf project
-          mkdir -p project
+          rm -rf extracted
+          mkdir -p extracted
 
-          unzip -o "$ZIP_FILE" -d project
+          unzip -q "$ZIP" -d extracted
 
-          echo "ZIP extracted."
-
-          echo "Searching Gradle project..."
-
-          SETTINGS_FILE=$(find project -type f \
+          SETTINGS=$(find extracted -type f \
             \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-            -not -path "*/.git/*" | head -n 1)
+            -print -quit)
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: Gradle settings file not found."
-            echo "Extracted files:"
-            find project -maxdepth 5 -type f | head -200
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle project not found."
+            find extracted -maxdepth 6 -type f | sort
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
-
-          echo "Gradle project found:"
-          echo "$PROJECT_DIR"
+          PROJECT_DIR=$(dirname "$SETTINGS")
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Remove broken Google Services configuration
-        working-directory: ${{ env.PROJECT_DIR }}
+          echo "Project:"
+          echo "$PROJECT_DIR"
+
+      - name: Fix Gradle configuration
         shell: bash
         run: |
           set -e
 
-          if [ -f "app/build.gradle.kts" ]; then
+          P="$PROJECT_DIR"
 
-            sed -i '/import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy/d' app/build.gradle.kts
+          echo "Checking project..."
 
-            sed -i '/^[[:space:]]*googleServices[[:space:]]*{/d' app/build.gradle.kts
-            sed -i '/MissingGoogleServicesStrategy.WARN/d' app/build.gradle.kts
-            sed -i '/^[[:space:]]*}[[:space:]]*$/d' /dev/null 2>/dev/null || true
+          if [ -f "$P/gradle/libs.versions.toml" ]; then
 
-            echo "Google Services configuration cleaned."
+            sed -i 's/agp = "9\.1\.1"/agp = "8.9.2"/g' \
+              "$P/gradle/libs.versions.toml"
+
+            echo "AGP adjusted."
+
           fi
 
-      - name: Find Gradle wrapper
-        working-directory: ${{ env.PROJECT_DIR }}
+          if [ -f "$P/app/build.gradle.kts" ]; then
+
+            sed -i \
+              's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/g' \
+              "$P/app/build.gradle.kts"
+
+            sed -i \
+              's/targetSdk = 36/targetSdk = 35/g' \
+              "$P/app/build.gradle.kts"
+
+            # Remove broken Google Services strategy
+            sed -i \
+              '/MissingGoogleServicesStrategy/d' \
+              "$P/app/build.gradle.kts"
+
+            sed -i \
+              '/^[[:space:]]*googleServices[[:space:]]*{/d' \
+              "$P/app/build.gradle.kts"
+
+            echo "app/build.gradle.kts adjusted."
+
+          fi
+
+          touch "$P/gradle.properties"
+
+          grep -q '^android.useAndroidX=' "$P/gradle.properties" \
+            || echo 'android.useAndroidX=true' >> "$P/gradle.properties"
+
+          grep -q '^android.enableJetifier=' "$P/gradle.properties" \
+            || echo 'android.enableJetifier=true' >> "$P/gradle.properties"
+
+          sed -i \
+            's/^org.gradle.configuration-cache=true$/org.gradle.configuration-cache=false/' \
+            "$P/gradle.properties"
+
+          grep -q '^org.gradle.configuration-cache=' "$P/gradle.properties" \
+            || echo 'org.gradle.configuration-cache=false' >> "$P/gradle.properties"
+
+      - name: Remove KSP plugin from app
         shell: bash
         run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            echo "Gradle wrapper found."
-          else
-            echo "Gradle wrapper not found. System Gradle will be used."
+          set -e
+
+          P="$PROJECT_DIR"
+
+          if [ -f "$P/app/build.gradle.kts" ]; then
+
+            sed -i \
+              '/id[[:space:]]*(["'\'']com.google.devtools.ksp["'\''])/d' \
+              "$P/app/build.gradle.kts"
+
+            sed -i \
+              '/alias[[:space:]]*(.*ksp.*)/d' \
+              "$P/app/build.gradle.kts"
+
+            sed -i \
+              '/^[[:space:]]*ksp[[:space:]]*{/d' \
+              "$P/app/build.gradle.kts"
+
+            echo "KSP plugin configuration removed from app."
+
+          fi
+
+      - name: Remove KSP dependencies
+        shell: bash
+        run: |
+          set -e
+
+          P="$PROJECT_DIR"
+
+          if [ -f "$P/app/build.gradle.kts" ]; then
+
+            sed -i \
+              '/^[[:space:]]*ksp[[:space:]]*(/d' \
+              "$P/app/build.gradle.kts"
+
+            sed -i \
+              '/^[[:space:]]*ksp[[:space:]]*"/d' \
+              "$P/app/build.gradle.kts"
+
+            echo "KSP dependencies cleaned."
+
+          fi
+
+      - name: Show Gradle files
+        shell: bash
+        run: |
+          echo "===== PROJECT ====="
+          find "$PROJECT_DIR" -maxdepth 3 -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.toml" \) \
+            | sort
+
+          echo "===== APP BUILD FILE ====="
+
+          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            cat "$PROJECT_DIR/app/build.gradle.kts"
           fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Clean
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          rm -rf .gradle
+          rm -rf build
+          rm -rf app/build
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
+          cd "$PROJECT_DIR"
+
           if [ -f "./gradlew" ]; then
-            ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+            chmod +x ./gradlew
+
+            ./gradlew \
+              --no-daemon \
+              --no-configuration-cache \
+              --stacktrace \
+              clean \
+              assembleDebug
+
           else
-            gradle --no-daemon --stacktrace :app:assembleDebug
+
+            gradle \
+              --no-daemon \
+              --no-configuration-cache \
+              --stacktrace \
+              clean \
+              assembleDebug
+
           fi
 
       - name: Check APK
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -type f \
+            -name "*.apk" \
+            -print -quit)
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not created."
-            find app/build/outputs -type f 2>/dev/null || true
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "===================================="
-          echo "APK BUILD SUCCESSFUL"
-          echo "===================================="
+          mkdir -p apk-output
 
-          ls -lh "$APK"
+          cp "$APK" apk-output/TEST-MITRA-debug.apk
+
+          echo "================================"
+          echo "APK BUILD SUCCESSFUL"
+          echo "================================"
+
+          ls -lh apk-output/TEST-MITRA-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: test-mitra-debug-apk
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          name: TEST-MITRA-debug-apk
+          path: apk-output/TEST-MITRA-debug.apk
           if-no-files-found: error
+          retention-days: 30
