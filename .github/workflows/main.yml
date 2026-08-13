@@ -14,10 +14,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -25,61 +26,97 @@ jobs:
 
       - name: Find ZIP
         run: |
+          set -e
           ZIP=$(find . -maxdepth 2 -type f -name "*.zip" | head -1)
+
           if [ -z "$ZIP" ]; then
-            echo "ZIP file not found"
+            echo "ERROR: ZIP file not found"
             exit 1
           fi
-          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
-      - name: Extract
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "Found: $ZIP"
+
+      - name: Extract ZIP
         run: |
+          set -e
           rm -rf extracted
-          mkdir extracted
+          mkdir -p extracted
           unzip -o "$ZIP" -d extracted
 
-      - name: Find Gradle Project
+      - name: Find Android Project
         run: |
-          FILE=$(find extracted -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
-          if [ -z "$FILE" ]; then
-            FILE=$(find extracted -type f \( -name "build.gradle.kts" -o -name "build.gradle" \) | head -1)
-          fi
-          if [ -z "$FILE" ]; then
-            echo "Gradle project not found"
-            exit 1
-          fi
-          DIR=$(dirname "$FILE")
-          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
-          echo "Project: $DIR"
+          set -e
 
-      - name: Setup Gradle
+          SETTINGS=$(find extracted -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            | head -1)
+
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR=$(dirname "$SETTINGS")
+          else
+            BUILD=$(find extracted -type f \
+              \( -name "build.gradle.kts" -o -name "build.gradle" \) \
+              | head -1)
+
+            if [ -z "$BUILD" ]; then
+              echo "ERROR: Gradle project not found"
+              exit 1
+            fi
+
+            PROJECT_DIR=$(dirname "$BUILD")
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '9.3.1'
 
       - name: Check Gradle
         run: |
           cd "$PROJECT_DIR"
           gradle --version
 
-      - name: Build APK
+      - name: Build Debug APK
         run: |
+          set -e
           cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon --stacktrace
+
+          gradle assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
 
       - name: Find APK
         run: |
-          APK=$(find "$PROJECT_DIR" -type f -name "*.apk" | head -1)
+          set -e
+
+          APK=$(find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            | head -1)
+
           if [ -z "$APK" ]; then
-            echo "APK not found"
+            echo "ERROR: APK was not created"
             exit 1
           fi
-          mkdir -p apk
-          cp "$APK" apk/TEST-MITRA-debug.apk
-          echo "APK created successfully"
+
+          mkdir -p apk-output
+          cp "$APK" apk-output/TEST-MITRA-debug.apk
+
+          echo "================================"
+          echo "APK CREATED SUCCESSFULLY"
+          echo "================================"
+
+          ls -lh apk-output/TEST-MITRA-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: TEST-MITRA-debug-apk
-          path: apk/TEST-MITRA-debug.apk
+          path: apk-output/TEST-MITRA-debug.apk
+          if-no-files-found: error
+          retention-days: 30
