@@ -24,13 +24,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Accept Android licenses
-        run: yes | sdkmanager --licenses || true
+        run: |
+          yes | sdkmanager --licenses || true
 
       - name: Install Android SDK packages
         run: |
@@ -38,55 +38,70 @@ jobs:
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      - name: Find Android project
+      - name: Find Android Gradle Project
         id: project
         shell: bash
         run: |
           set -e
 
-          echo "Searching for Android Gradle project..."
+          echo "Searching for Gradle project..."
 
           PROJECT_DIR=""
 
-          while IFS= read -r file; do
-            dir="$(dirname "$file")"
+          while IFS= read -r settings_file; do
 
-            if [ -f "$dir/settings.gradle" ] || \
-               [ -f "$dir/settings.gradle.kts" ]; then
-              PROJECT_DIR="$dir"
+            DIR="$(dirname "$settings_file")"
+
+            if [ -f "$DIR/settings.gradle" ] || \
+               [ -f "$DIR/settings.gradle.kts" ]; then
+
+              PROJECT_DIR="$DIR"
               break
+
             fi
-          done < <(find . -type f \( \
-            -name "settings.gradle" -o \
-            -name "settings.gradle.kts" \
-          \) \
-          ! -path "./.git/*" \
-          ! -path "*/build/*")
+
+          done < <(
+            find . \
+              -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              ! -path "./.git/*"
+          )
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No Android Gradle project found."
-            echo "Repository files:"
-            find . -maxdepth 4 -type f | sort | head -300
+
+            echo "ERROR: No Gradle project found."
+
+            echo "Repository structure:"
+            find . -maxdepth 5 -type f \
+              ! -path "./.git/*" \
+              | sort
+
             exit 1
           fi
 
           PROJECT_DIR="${PROJECT_DIR#./}"
 
-          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "================================"
+          echo "Gradle project found:"
+          echo "$PROJECT_DIR"
+          echo "================================"
+
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Show project files
+      - name: Show Project Files
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          echo "===== PROJECT ====="
+          echo "Current directory:"
           pwd
-          echo "===== FILES ====="
-          find . -maxdepth 3 -type f \
+
+          echo ""
+          echo "Project files:"
+          find . -maxdepth 4 -type f \
             ! -path "./.gradle/*" \
             ! -path "./build/*" \
             | sort
 
-      - name: Make Gradle executable
+      - name: Make Gradle Executable
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           if [ -f "./gradlew" ]; then
@@ -104,11 +119,23 @@ jobs:
 
       - name: Clean Project
         working-directory: ${{ steps.project.outputs.project_dir }}
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g"
         run: |
+          set -e
+
           if [ -f "./gradlew" ]; then
-            ./gradlew clean --no-daemon
+
+            ./gradlew clean \
+              --no-daemon \
+              --stacktrace
+
           else
-            gradle clean --no-daemon
+
+            gradle clean \
+              --no-daemon \
+              --stacktrace
+
           fi
 
       - name: Build Debug APK
@@ -119,18 +146,24 @@ jobs:
         run: |
           set -e
 
-          echo "Building TEST MITRA APK..."
+          echo "================================"
+          echo "BUILDING TEST MITRA APK"
+          echo "================================"
 
           if [ -f "./gradlew" ]; then
+
             ./gradlew assembleDebug \
               --no-daemon \
               --stacktrace \
               --no-build-cache
+
           else
+
             gradle assembleDebug \
               --no-daemon \
               --stacktrace \
               --no-build-cache
+
           fi
 
       - name: Find APK
@@ -140,19 +173,29 @@ jobs:
         run: |
           set -e
 
-          APK="$(find . -type f \
+          echo "Searching for APK..."
+
+          APK="$(find . \
+            -type f \
             -name "*.apk" \
             ! -path "*/build/intermediates/*" \
-            | head -1)"
+            | head -n 1)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK not found."
+
+            echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "All APK files:"
             find . -type f -name "*.apk" -print
+
             exit 1
           fi
 
-          echo "APK found:"
+          echo "================================"
+          echo "APK FOUND:"
           echo "$APK"
+          echo "================================"
 
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
@@ -160,7 +203,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TEST-MITRA-APK
-          path: |
-            ${{ steps.project.outputs.project_dir }}/${{ steps.apk.outputs.apk }}
+          path: ${{ steps.project.outputs.project_dir }}/${{ steps.apk.outputs.apk }}
           if-no-files-found: error
           retention-days: 7
