@@ -33,13 +33,11 @@ jobs:
           ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: ZIP file not found."
+            echo "ERROR: TEST MITRA ZIP not found."
             exit 1
           fi
 
-          echo "ZIP FILE:"
-          echo "$ZIP_FILE"
-
+          echo "ZIP FILE: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
       - name: Extract TEST MITRA
@@ -52,10 +50,10 @@ jobs:
 
           unzip -o "$ZIP_FILE" -d extracted
 
-          echo "===== EXTRACTED FILES ====="
+          echo "===== EXTRACTED PROJECT ====="
           find extracted -maxdepth 6 -type f | sort
 
-      - name: Find Android Gradle Project
+      - name: Find Android Project
         shell: bash
         run: |
           set -e
@@ -72,7 +70,6 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-
             BUILD_FILE=$(find extracted -type f \( \
               -name "build.gradle.kts" \
               -o -name "build.gradle" \
@@ -81,7 +78,6 @@ jobs:
             if [ -n "$BUILD_FILE" ]; then
               PROJECT_DIR=$(dirname "$BUILD_FILE")
             fi
-
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
@@ -91,22 +87,58 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "ANDROID PROJECT:"
+          echo "PROJECT:"
           echo "$PROJECT_DIR"
 
-      - name: Fix Google Services Configuration
+      - name: Fix Android Gradle Plugin
         shell: bash
         run: |
           set -e
 
-          APP="$PROJECT_DIR/app/build.gradle.kts"
-          ROOT="$PROJECT_DIR/build.gradle.kts"
+          P="$PROJECT_DIR"
 
-          echo "===== APP BUILD FILE ====="
-          cat "$APP"
+          if [ -f "$P/gradle/libs.versions.toml" ]; then
+            sed -i \
+              's/agp = "9\.1\.1"/agp = "8.9.2"/' \
+              "$P/gradle/libs.versions.toml"
+          fi
 
-          echo ""
-          echo "===== REMOVING GOOGLE SERVICES DSL ====="
+      - name: Fix Google Services Error
+        shell: bash
+        run: |
+          set -e
+
+          P="$PROJECT_DIR"
+
+          for FILE in \
+            "$P/app/build.gradle.kts" \
+            "$P/build.gradle.kts" \
+            "$P/settings.gradle.kts"
+          do
+
+            if [ -f "$FILE" ]; then
+
+              sed -i \
+                '/import com\.google\.gms\.googleServices/d' \
+                "$FILE"
+
+              sed -i \
+                '/MissingGoogleServicesStrategy/d' \
+                "$FILE"
+
+              sed -i \
+                '/com\.google\.gms\.google-services/d' \
+                "$FILE"
+
+              sed -i \
+                '/google-services/d' \
+                "$FILE"
+
+            fi
+
+          done
+
+          APP="$P/app/build.gradle.kts"
 
           python3 - "$APP" <<'PY'
           import sys
@@ -117,126 +149,221 @@ jobs:
           with open(path, "r", encoding="utf-8") as f:
               text = f.read()
 
-          # Remove Google Services import.
+          # Remove gms { ... }
           text = re.sub(
-              r'(?m)^[ \t]*import\s+com\.google\.gms\.googleServices\.[^\n]*\n?',
+              r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}\s*',
               '',
               text
           )
 
-          # Remove MissingGoogleServicesStrategy imports.
+          # Remove googleServices { ... }
           text = re.sub(
-              r'(?m)^[ \t]*import\s+.*MissingGoogleServicesStrategy.*\n?',
+              r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}\s*',
               '',
               text
           )
 
-          # Remove gms { ... } blocks.
-          pattern = re.compile(
-              r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}\s*'
-          )
-
-          text = pattern.sub('', text)
-
-          # Remove googleServices { ... } blocks.
-          pattern = re.compile(
-              r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}\s*'
-          )
-
-          text = pattern.sub('', text)
-
-          # Remove strategy lines.
+          # Remove strategy configuration.
           text = re.sub(
-              r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*\n?',
+              r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*$',
               '',
               text
           )
 
-          text = re.sub(
-              r'(?m)^[ \t]*MissingGoogleServicesStrategy\.[A-Za-z_]+.*\n?',
-              '',
-              text
-          )
-
-          # Remove direct googleServices assignments.
-          text = re.sub(
-              r'(?m)^[ \t]*googleServices\s*=.*\n?',
-              '',
-              text
-          )
-
-          # Remove excessive empty lines.
           text = re.sub(r'\n{3,}', '\n\n', text)
 
           with open(path, "w", encoding="utf-8") as f:
               f.write(text)
-
-          print("Google Services configuration cleaned.")
           PY
 
-          echo "===== AFTER CLEANUP ====="
-          cat "$APP"
-
-      - name: Remove Google Services Plugin If Present
+      - name: Add AndroidX and Compose Dependencies
         shell: bash
         run: |
           set -e
 
           APP="$PROJECT_DIR/app/build.gradle.kts"
-          ROOT="$PROJECT_DIR/build.gradle.kts"
-          SETTINGS="$PROJECT_DIR/settings.gradle.kts"
 
-          for FILE in "$APP" "$ROOT" "$SETTINGS"; do
+          echo "===== APP BUILD BEFORE ====="
+          cat "$APP"
 
-            if [ -f "$FILE" ]; then
+          python3 - "$APP" <<'PY'
+          import sys
+          import re
 
-              sed -i \
-                '/com\.google\.gms\.google-services/d' \
-                "$FILE"
+          path = sys.argv[1]
 
-              sed -i \
-                '/google-services/d' \
-                "$FILE"
+          with open(path, "r", encoding="utf-8") as f:
+              text = f.read()
 
-              sed -i \
-                '/MissingGoogleServicesStrategy/d' \
-                "$FILE"
+          # Enable Compose if android { } exists.
+          if "buildFeatures" not in text:
+              text = text.replace(
+                  "android {",
+                  """android {
 
-            fi
+    buildFeatures {
+        compose = true
+    }
 
-          done
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.15"
+    }
+""",
+                  1
+              )
 
-          echo "Google Services plugin references removed where present."
+          dependencies_block = r'''
+dependencies {
 
-      - name: Setup Gradle 9.3.1
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.activity:activity-compose:1.10.1")
+
+    implementation(platform("androidx.compose:compose-bom:2025.02.00"))
+
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+
+    implementation("androidx.compose.material3:material3")
+
+    implementation("androidx.compose.runtime:runtime")
+
+    implementation("androidx.compose.foundation:foundation")
+
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
+'''
+
+          # If dependencies block exists, append required dependencies.
+          if re.search(r'(?m)^\s*dependencies\s*\{', text):
+              match = re.search(
+                  r'(?ms)(^\s*dependencies\s*\{.*?^\s*\})',
+                  text
+              )
+
+              if match:
+                  old = match.group(1)
+
+                  required = [
+                      'implementation("androidx.core:core-ktx:1.15.0")',
+                      'implementation("androidx.activity:activity-compose:1.10.1")',
+                      'implementation(platform("androidx.compose:compose-bom:2025.02.00"))',
+                      'implementation("androidx.compose.ui:ui")',
+                      'implementation("androidx.compose.ui:ui-tooling-preview")',
+                      'implementation("androidx.compose.material3:material3")',
+                      'implementation("androidx.compose.runtime:runtime")',
+                      'implementation("androidx.compose.foundation:foundation")',
+                      'implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")',
+                      'debugImplementation("androidx.compose.ui:ui-tooling")'
+                  ]
+
+                  additions = []
+
+                  for dep in required:
+                      if dep not in old:
+                          additions.append("    " + dep)
+
+                  if additions:
+                      new = old[:-1] + "\n\n" + "\n".join(additions) + "\n}"
+                      text = text.replace(old, new, 1)
+
+          else:
+              text += "\n" + dependencies_block
+
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(text)
+          PY
+
+          echo "===== APP BUILD AFTER ====="
+          cat "$APP"
+
+      - name: Fix SDK
+        shell: bash
+        run: |
+          set -e
+
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+
+          sed -i \
+            's/targetSdk = 36/targetSdk = 35/' \
+            "$APP" || true
+
+          sed -i \
+            's/compileSdk = 36/compileSdk = 35/' \
+            "$APP" || true
+
+          sed -i \
+            's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/' \
+            "$APP" || true
+
+      - name: Configure AndroidX
+        shell: bash
+        run: |
+          set -e
+
+          P="$PROJECT_DIR"
+
+          touch "$P/gradle.properties"
+
+          grep -q '^android.useAndroidX=true' \
+            "$P/gradle.properties" || \
+            echo 'android.useAndroidX=true' >> "$P/gradle.properties"
+
+          grep -q '^android.enableJetifier=' \
+            "$P/gradle.properties" || \
+            echo 'android.enableJetifier=true' >> "$P/gradle.properties"
+
+          sed -i \
+            's/^org.gradle.configuration-cache=true$/org.gradle.configuration-cache=false/' \
+            "$P/gradle.properties"
+
+          grep -q '^org.gradle.configuration-cache=' \
+            "$P/gradle.properties" || \
+            echo 'org.gradle.configuration-cache=false' >> "$P/gradle.properties"
+
+      - name: Configure Supabase
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -e
+
+          P="$PROJECT_DIR"
+
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+
+            printf \
+              'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
+              "$SUPABASE_URL" \
+              "$SUPABASE_ANON_KEY" > "$P/.env"
+
+            echo "Supabase configured."
+
+          elif [ -f "$P/.env.example" ]; then
+
+            cp "$P/.env.example" "$P/.env"
+
+            echo "Using .env.example."
+
+          else
+
+            touch "$P/.env"
+
+            echo "No Supabase configuration supplied."
+
+          fi
+
+      - name: Setup Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.11.1'
 
       - name: Check Gradle
         shell: bash
         run: |
           gradle --version
-
-      - name: Show Final Build Files
-        shell: bash
-        run: |
-          echo "===== SETTINGS ====="
-
-          if [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            cat "$PROJECT_DIR/settings.gradle.kts"
-          fi
-
-          echo ""
-          echo "===== ROOT BUILD ====="
-
-          if [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            cat "$PROJECT_DIR/build.gradle.kts"
-          fi
-
-          echo ""
-          echo "===== APP BUILD ====="
-          cat "$PROJECT_DIR/app/build.gradle.kts"
 
       - name: Clean Project
         shell: bash
@@ -273,26 +400,28 @@ jobs:
         run: |
           set -e
 
-          echo "===== GENERATED APK ====="
+          echo "===== APK ====="
 
           find "$PROJECT_DIR" \
             -type f \
             -name "*.apk" \
             -print
 
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+          APK=$(find \
+            "$PROJECT_DIR/app/build/outputs/apk/debug" \
             -type f \
             -name "*.apk" \
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK not generated."
             exit 1
           fi
 
           mkdir -p apk-output
 
-          cp "$APK" apk-output/TEST-MITRA-debug.apk
+          cp "$APK" \
+            apk-output/TEST-MITRA-debug.apk
 
           echo "APK READY:"
           echo "$APK"
