@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    name: Build TEST MITRA APK
     runs-on: ubuntu-latest
 
     steps:
@@ -27,6 +28,7 @@ jobs:
       - name: Find ZIP
         run: |
           set -e
+
           ZIP=$(find . -maxdepth 2 -type f -name "*.zip" | head -1)
 
           if [ -z "$ZIP" ]; then
@@ -35,14 +37,18 @@ jobs:
           fi
 
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found: $ZIP"
+          echo "Found ZIP: $ZIP"
 
       - name: Extract ZIP
         run: |
           set -e
+
           rm -rf extracted
           mkdir -p extracted
+
           unzip -o "$ZIP" -d extracted
+
+          echo "ZIP extracted successfully"
 
       - name: Find Android Project
         run: |
@@ -68,7 +74,61 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project: $PROJECT_DIR"
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+      - name: Remove Google Services Configuration
+        run: |
+          set -e
+
+          echo "Removing Google Services references..."
+
+          find "$PROJECT_DIR" -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
+            -print0 |
+          while IFS= read -r -d '' FILE
+          do
+            sed -i \
+              -e '/com\.google\.gms\.google-services/d' \
+              -e '/com\.google\.gms\.googleServices/d' \
+              -e '/MissingGoogleServicesStrategy/d' \
+              -e '/googleServices/d' \
+              -e '/gms/d' \
+              "$FILE"
+
+            echo "Fixed: $FILE"
+          done
+
+      - name: Remove Google Services Plugin
+        run: |
+          set -e
+
+          find "$PROJECT_DIR" -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
+            -print0 |
+          while IFS= read -r -d '' FILE
+          do
+            sed -i \
+              -e '/google-services/d' \
+              -e '/GoogleServices/d' \
+              -e '/googleServices/d' \
+              "$FILE"
+          done
+
+          echo "Google Services plugin references removed"
+
+      - name: Show App Gradle
+        run: |
+          echo "================================"
+          echo "APP BUILD.GRADLE"
+          echo "================================"
+
+          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            cat "$PROJECT_DIR/app/build.gradle.kts"
+          elif [ -f "$PROJECT_DIR/app/build.gradle" ]; then
+            cat "$PROJECT_DIR/app/build.gradle"
+          fi
 
       - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -80,9 +140,21 @@ jobs:
           cd "$PROJECT_DIR"
           gradle --version
 
+      - name: Clean Project
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          gradle clean \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
+
       - name: Build Debug APK
         run: |
           set -e
+
           cd "$PROJECT_DIR"
 
           gradle assembleDebug \
@@ -96,15 +168,16 @@ jobs:
 
           APK=$(find "$PROJECT_DIR" \
             -type f \
-            -name "*.apk" \
-            | head -1)
+            -name "*.apk" |
+            head -1)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not created"
+            echo "ERROR: APK not found"
             exit 1
           fi
 
           mkdir -p apk-output
+
           cp "$APK" apk-output/TEST-MITRA-debug.apk
 
           echo "================================"
