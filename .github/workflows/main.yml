@@ -19,13 +19,13 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Find and Extract TEST MITRA ZIP
+      - name: Find TEST MITRA ZIP
         shell: bash
         run: |
           set -e
@@ -33,11 +33,19 @@ jobs:
           ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: TEST MITRA ZIP not found."
+            echo "ERROR: ZIP file not found."
             exit 1
           fi
 
-          echo "ZIP FILE: $ZIP_FILE"
+          echo "ZIP FILE:"
+          echo "$ZIP_FILE"
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract TEST MITRA
+        shell: bash
+        run: |
+          set -e
 
           rm -rf extracted
           mkdir -p extracted
@@ -45,9 +53,9 @@ jobs:
           unzip -o "$ZIP_FILE" -d extracted
 
           echo "===== EXTRACTED FILES ====="
-          find extracted -maxdepth 5 -type f | sort
+          find extracted -maxdepth 6 -type f | sort
 
-      - name: Find Android Project
+      - name: Find Android Gradle Project
         shell: bash
         run: |
           set -e
@@ -64,6 +72,7 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
+
             BUILD_FILE=$(find extracted -type f \( \
               -name "build.gradle.kts" \
               -o -name "build.gradle" \
@@ -72,40 +81,33 @@ jobs:
             if [ -n "$BUILD_FILE" ]; then
               PROJECT_DIR=$(dirname "$BUILD_FILE")
             fi
+
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Android Gradle project not found."
-            find extracted -type f | sort
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Android project:"
+          echo "ANDROID PROJECT:"
           echo "$PROJECT_DIR"
 
-      - name: Fix Android Build Configuration
+      - name: Fix Google Services Configuration
         shell: bash
         run: |
           set -e
 
-          P="$PROJECT_DIR"
-          APP="$P/app/build.gradle.kts"
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+          ROOT="$PROJECT_DIR/build.gradle.kts"
 
-          echo "Project: $P"
-          echo "App Gradle file: $APP"
-
-          if [ ! -f "$APP" ]; then
-            echo "ERROR: app/build.gradle.kts not found."
-            find "$P" -maxdepth 4 -type f | sort
-            exit 1
-          fi
-
-          echo "===== BEFORE FIX ====="
+          echo "===== APP BUILD FILE ====="
           cat "$APP"
 
-          # Remove problematic Google Services DSL blocks.
+          echo ""
+          echo "===== REMOVING GOOGLE SERVICES DSL ====="
+
           python3 - "$APP" <<'PY'
           import sys
           import re
@@ -115,103 +117,96 @@ jobs:
           with open(path, "r", encoding="utf-8") as f:
               text = f.read()
 
-          # Remove gms { ... } blocks
+          # Remove Google Services import.
           text = re.sub(
-              r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}\s*',
+              r'(?m)^[ \t]*import\s+com\.google\.gms\.googleServices\.[^\n]*\n?',
               '',
               text
           )
 
-          # Remove googleServices { ... } blocks
+          # Remove MissingGoogleServicesStrategy imports.
           text = re.sub(
-              r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}\s*',
+              r'(?m)^[ \t]*import\s+.*MissingGoogleServicesStrategy.*\n?',
               '',
               text
           )
 
-          # Remove standalone problematic configuration lines.
+          # Remove gms { ... } blocks.
+          pattern = re.compile(
+              r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}\s*'
+          )
+
+          text = pattern.sub('', text)
+
+          # Remove googleServices { ... } blocks.
+          pattern = re.compile(
+              r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}\s*'
+          )
+
+          text = pattern.sub('', text)
+
+          # Remove strategy lines.
           text = re.sub(
-              r'(?m)^[ \t]*googleServices\s*\{?\s*$',
+              r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*\n?',
               '',
               text
           )
 
           text = re.sub(
-              r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*$',
+              r'(?m)^[ \t]*MissingGoogleServicesStrategy\.[A-Za-z_]+.*\n?',
               '',
               text
           )
 
+          # Remove direct googleServices assignments.
           text = re.sub(
-              r'(?m)^[ \t]*MissingGoogleServicesStrategy\.[A-Za-z_]+\)?\s*$',
+              r'(?m)^[ \t]*googleServices\s*=.*\n?',
               '',
               text
           )
 
-          # Remove empty lines created by the cleanup.
+          # Remove excessive empty lines.
           text = re.sub(r'\n{3,}', '\n\n', text)
 
           with open(path, "w", encoding="utf-8") as f:
               f.write(text)
+
+          print("Google Services configuration cleaned.")
           PY
 
-          # Use a stable Android SDK level.
-          sed -i \
-            's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/' \
-            "$APP" || true
-
-          sed -i 's/targetSdk = 36/targetSdk = 35/' "$APP" || true
-
-          # AndroidX configuration.
-          touch "$P/gradle.properties"
-
-          grep -q '^android.useAndroidX=true' "$P/gradle.properties" || \
-            echo 'android.useAndroidX=true' >> "$P/gradle.properties"
-
-          grep -q '^android.enableJetifier=true' "$P/gradle.properties" || \
-            echo 'android.enableJetifier=true' >> "$P/gradle.properties"
-
-          sed -i \
-            's/^org.gradle.configuration-cache=true$/org.gradle.configuration-cache=false/' \
-            "$P/gradle.properties"
-
-          grep -q '^org.gradle.configuration-cache=' "$P/gradle.properties" || \
-            echo 'org.gradle.configuration-cache=false' >> "$P/gradle.properties"
-
-          echo "===== AFTER FIX ====="
+          echo "===== AFTER CLEANUP ====="
           cat "$APP"
 
-      - name: Configure Supabase
+      - name: Remove Google Services Plugin If Present
         shell: bash
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           set -e
 
-          P="$PROJECT_DIR"
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+          ROOT="$PROJECT_DIR/build.gradle.kts"
+          SETTINGS="$PROJECT_DIR/settings.gradle.kts"
 
-          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+          for FILE in "$APP" "$ROOT" "$SETTINGS"; do
 
-            printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
-              "$SUPABASE_URL" \
-              "$SUPABASE_ANON_KEY" > "$P/.env"
+            if [ -f "$FILE" ]; then
 
-            echo "Supabase secrets configured."
+              sed -i \
+                '/com\.google\.gms\.google-services/d' \
+                "$FILE"
 
-          elif [ -f "$P/.env.example" ]; then
+              sed -i \
+                '/google-services/d' \
+                "$FILE"
 
-            cp "$P/.env.example" "$P/.env"
+              sed -i \
+                '/MissingGoogleServicesStrategy/d' \
+                "$FILE"
 
-            echo "Using .env.example."
+            fi
 
-          else
+          done
 
-            touch "$P/.env"
-
-            echo "No Supabase secrets supplied."
-
-          fi
+          echo "Google Services plugin references removed where present."
 
       - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -222,6 +217,26 @@ jobs:
         shell: bash
         run: |
           gradle --version
+
+      - name: Show Final Build Files
+        shell: bash
+        run: |
+          echo "===== SETTINGS ====="
+
+          if [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            cat "$PROJECT_DIR/settings.gradle.kts"
+          fi
+
+          echo ""
+          echo "===== ROOT BUILD ====="
+
+          if [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            cat "$PROJECT_DIR/build.gradle.kts"
+          fi
+
+          echo ""
+          echo "===== APP BUILD ====="
+          cat "$PROJECT_DIR/app/build.gradle.kts"
 
       - name: Clean Project
         shell: bash
@@ -258,7 +273,7 @@ jobs:
         run: |
           set -e
 
-          echo "===== APK FILES ====="
+          echo "===== GENERATED APK ====="
 
           find "$PROJECT_DIR" \
             -type f \
@@ -279,10 +294,10 @@ jobs:
 
           cp "$APK" apk-output/TEST-MITRA-debug.apk
 
-          echo "APK created:"
+          echo "APK READY:"
           echo "$APK"
 
-      - name: Upload TEST MITRA APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: TEST-MITRA-debug-apk
