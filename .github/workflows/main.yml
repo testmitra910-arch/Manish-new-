@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build TEST MITRA APK
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
@@ -20,176 +20,147 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Find ZIP
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+
+      - name: Find Android project
+        id: project
+        shell: bash
         run: |
           set -e
 
-          ZIP=$(find . -maxdepth 2 -type f -name "*.zip" | head -1)
+          echo "Searching for Android Gradle project..."
 
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: ZIP file not found"
+          PROJECT_DIR=""
+
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+
+            if [ -f "$dir/settings.gradle" ] || \
+               [ -f "$dir/settings.gradle.kts" ]; then
+              PROJECT_DIR="$dir"
+              break
+            fi
+          done < <(find . -type f \( \
+            -name "settings.gradle" -o \
+            -name "settings.gradle.kts" \
+          \) \
+          ! -path "./.git/*" \
+          ! -path "*/build/*")
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: No Android Gradle project found."
+            echo "Repository files:"
+            find . -maxdepth 4 -type f | sort | head -300
             exit 1
           fi
 
-          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP"
+          PROJECT_DIR="${PROJECT_DIR#./}"
 
-      - name: Extract ZIP
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Show project files
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          set -e
+          echo "===== PROJECT ====="
+          pwd
+          echo "===== FILES ====="
+          find . -maxdepth 3 -type f \
+            ! -path "./.gradle/*" \
+            ! -path "./build/*" \
+            | sort
 
-          rm -rf extracted
-          mkdir -p extracted
-
-          unzip -o "$ZIP" -d extracted
-
-          echo "ZIP extracted successfully"
-
-      - name: Find Android Project
+      - name: Make Gradle executable
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          set -e
-
-          SETTINGS=$(find extracted -type f \
-            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-            | head -1)
-
-          if [ -n "$SETTINGS" ]; then
-            PROJECT_DIR=$(dirname "$SETTINGS")
-          else
-            BUILD=$(find extracted -type f \
-              \( -name "build.gradle.kts" -o -name "build.gradle" \) \
-              | head -1)
-
-            if [ -z "$BUILD" ]; then
-              echo "ERROR: Gradle project not found"
-              exit 1
-            fi
-
-            PROJECT_DIR=$(dirname "$BUILD")
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
           fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
-      - name: Remove Google Services Configuration
-        run: |
-          set -e
-
-          echo "Removing Google Services references..."
-
-          find "$PROJECT_DIR" -type f \
-            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
-            -print0 |
-          while IFS= read -r -d '' FILE
-          do
-            sed -i \
-              -e '/com\.google\.gms\.google-services/d' \
-              -e '/com\.google\.gms\.googleServices/d' \
-              -e '/MissingGoogleServicesStrategy/d' \
-              -e '/googleServices/d' \
-              -e '/gms/d' \
-              "$FILE"
-
-            echo "Fixed: $FILE"
-          done
-
-      - name: Remove Google Services Plugin
-        run: |
-          set -e
-
-          find "$PROJECT_DIR" -type f \
-            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
-            -print0 |
-          while IFS= read -r -d '' FILE
-          do
-            sed -i \
-              -e '/google-services/d' \
-              -e '/GoogleServices/d' \
-              -e '/googleServices/d' \
-              "$FILE"
-          done
-
-          echo "Google Services plugin references removed"
-
-      - name: Show App Gradle
-        run: |
-          echo "================================"
-          echo "APP BUILD.GRADLE"
-          echo "================================"
-
-          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            cat "$PROJECT_DIR/app/build.gradle.kts"
-          elif [ -f "$PROJECT_DIR/app/build.gradle" ]; then
-            cat "$PROJECT_DIR/app/build.gradle"
-          fi
-
-      - name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
       - name: Check Gradle
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          cd "$PROJECT_DIR"
-          gradle --version
+          if [ -f "./gradlew" ]; then
+            ./gradlew --version
+          else
+            gradle --version
+          fi
 
       - name: Clean Project
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          gradle clean \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace
+          if [ -f "./gradlew" ]; then
+            ./gradlew clean --no-daemon
+          else
+            gradle clean --no-daemon
+          fi
 
       - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        env:
+          CI: true
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g"
         run: |
           set -e
 
-          cd "$PROJECT_DIR"
+          echo "Building TEST MITRA APK..."
 
-          gradle assembleDebug \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug \
+              --no-daemon \
+              --stacktrace \
+              --no-build-cache
+          else
+            gradle assembleDebug \
+              --no-daemon \
+              --stacktrace \
+              --no-build-cache
+          fi
 
       - name: Find APK
+        id: apk
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -e
 
-          APK=$(find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" |
-            head -1)
+          APK="$(find . -type f \
+            -name "*.apk" \
+            ! -path "*/build/intermediates/*" \
+            | head -1)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK not found"
+            echo "ERROR: APK not found."
+            find . -type f -name "*.apk" -print
             exit 1
           fi
 
-          mkdir -p apk-output
+          echo "APK found:"
+          echo "$APK"
 
-          cp "$APK" apk-output/TEST-MITRA-debug.apk
-
-          echo "================================"
-          echo "APK CREATED SUCCESSFULLY"
-          echo "================================"
-
-          ls -lh apk-output/TEST-MITRA-debug.apk
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TEST-MITRA-debug-apk
-          path: apk-output/TEST-MITRA-debug.apk
+          name: TEST-MITRA-APK
+          path: |
+            ${{ steps.project.outputs.project_dir }}/${{ steps.apk.outputs.apk }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
