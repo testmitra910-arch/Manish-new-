@@ -15,8 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -25,33 +24,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Find TEST MITRA ZIP
+      - name: Find ZIP
         shell: bash
         run: |
           set -e
-
           ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: TEST MITRA ZIP not found."
+            echo "ERROR: ZIP file not found"
             exit 1
           fi
 
-          echo "ZIP FILE: $ZIP_FILE"
+          echo "Found: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Extract TEST MITRA
+      - name: Extract ZIP
         shell: bash
         run: |
           set -e
-
           rm -rf extracted
           mkdir -p extracted
-
           unzip -o "$ZIP_FILE" -d extracted
-
-          echo "===== EXTRACTED PROJECT ====="
-          find extracted -maxdepth 6 -type f | sort
 
       - name: Find Android Project
         shell: bash
@@ -60,20 +53,18 @@ jobs:
 
           PROJECT_DIR=""
 
-          SETTINGS_FILE=$(find extracted -type f \( \
-            -name "settings.gradle.kts" \
-            -o -name "settings.gradle" \
-          \) -print -quit)
+          SETTINGS=$(find extracted -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            -print -quit)
 
-          if [ -n "$SETTINGS_FILE" ]; then
-            PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR=$(dirname "$SETTINGS")
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            BUILD_FILE=$(find extracted -type f \( \
-              -name "build.gradle.kts" \
-              -o -name "build.gradle" \
-            \) -print -quit)
+            BUILD_FILE=$(find extracted -type f \
+              \( -name "build.gradle.kts" -o -name "build.gradle" \) \
+              -print -quit)
 
             if [ -n "$BUILD_FILE" ]; then
               PROJECT_DIR=$(dirname "$BUILD_FILE")
@@ -81,281 +72,166 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android Gradle project not found."
+            echo "ERROR: Android Gradle project not found"
+            find extracted -maxdepth 5 -type f
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
 
-          echo "PROJECT:"
-          echo "$PROJECT_DIR"
-
-      - name: Fix Android Gradle Plugin
+      - name: Remove Google Services References
         shell: bash
         run: |
           set -e
-
-          P="$PROJECT_DIR"
-
-          if [ -f "$P/gradle/libs.versions.toml" ]; then
-            sed -i \
-              's/agp = "9\.1\.1"/agp = "8.9.2"/' \
-              "$P/gradle/libs.versions.toml"
-          fi
-
-      - name: Fix Google Services Error
-        shell: bash
-        run: |
-          set -e
-
-          P="$PROJECT_DIR"
 
           for FILE in \
-            "$P/app/build.gradle.kts" \
-            "$P/build.gradle.kts" \
-            "$P/settings.gradle.kts"
+            "$PROJECT_DIR/app/build.gradle.kts" \
+            "$PROJECT_DIR/build.gradle.kts" \
+            "$PROJECT_DIR/settings.gradle.kts"
           do
-
             if [ -f "$FILE" ]; then
-
-              sed -i \
-                '/import com\.google\.gms\.googleServices/d' \
-                "$FILE"
-
-              sed -i \
-                '/MissingGoogleServicesStrategy/d' \
-                "$FILE"
-
-              sed -i \
-                '/com\.google\.gms\.google-services/d' \
-                "$FILE"
-
-              sed -i \
-                '/google-services/d' \
-                "$FILE"
-
+              sed -i '/MissingGoogleServicesStrategy/d' "$FILE"
+              sed -i '/com.google.gms.google-services/d' "$FILE"
+              sed -i '/com.google.gms.googleServices/d' "$FILE"
             fi
-
           done
 
-          APP="$P/app/build.gradle.kts"
+          APP="$PROJECT_DIR/app/build.gradle.kts"
 
-          python3 - "$APP" <<'PY'
-          import sys
-          import re
+          if [ -f "$APP" ]; then
+            python3 - "$APP" <<'PY'
+import sys
+import re
 
-          path = sys.argv[1]
+path = sys.argv[1]
 
-          with open(path, "r", encoding="utf-8") as f:
-              text = f.read()
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
 
-          # Remove gms { ... }
-          text = re.sub(
-              r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}\s*',
-              '',
-              text
-          )
+text = re.sub(
+    r'(?ms)^[ \t]*gms\s*\{.*?^[ \t]*\}',
+    '',
+    text
+)
 
-          # Remove googleServices { ... }
-          text = re.sub(
-              r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}\s*',
-              '',
-              text
-          )
+text = re.sub(
+    r'(?ms)^[ \t]*googleServices\s*\{.*?^[ \t]*\}',
+    '',
+    text
+)
 
-          # Remove strategy configuration.
-          text = re.sub(
-              r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*$',
-              '',
-              text
-          )
+text = re.sub(
+    r'(?m)^[ \t]*missingGoogleServicesStrategy\s*=.*$',
+    '',
+    text
+)
 
-          text = re.sub(r'\n{3,}', '\n\n', text)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
+          fi
 
-          with open(path, "w", encoding="utf-8") as f:
-              f.write(text)
-          PY
+      - name: Fix AndroidX
+        shell: bash
+        run: |
+          set -e
 
-      - name: Add AndroidX and Compose Dependencies
+          touch "$PROJECT_DIR/gradle.properties"
+
+          grep -q '^android.useAndroidX=true' \
+            "$PROJECT_DIR/gradle.properties" || \
+            echo 'android.useAndroidX=true' >> "$PROJECT_DIR/gradle.properties"
+
+          grep -q '^android.enableJetifier=true' \
+            "$PROJECT_DIR/gradle.properties" || \
+            echo 'android.enableJetifier=true' >> "$PROJECT_DIR/gradle.properties"
+
+          grep -q '^org.gradle.configuration-cache=false' \
+            "$PROJECT_DIR/gradle.properties" || \
+            echo 'org.gradle.configuration-cache=false' >> "$PROJECT_DIR/gradle.properties"
+
+      - name: Add Compose Dependencies
         shell: bash
         run: |
           set -e
 
           APP="$PROJECT_DIR/app/build.gradle.kts"
 
-          echo "===== APP BUILD BEFORE ====="
-          cat "$APP"
-
           python3 - "$APP" <<'PY'
-          import sys
-          import re
+import sys
 
-          path = sys.argv[1]
+path = sys.argv[1]
 
-          with open(path, "r", encoding="utf-8") as f:
-              text = f.read()
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
 
-          # Enable Compose if android { } exists.
-          if "buildFeatures" not in text:
-              text = text.replace(
-                  "android {",
-                  """android {
+required = [
+    'implementation("androidx.core:core-ktx:1.15.0")',
+    'implementation("androidx.activity:activity-compose:1.10.1")',
+    'implementation(platform("androidx.compose:compose-bom:2025.02.00"))',
+    'implementation("androidx.compose.ui:ui")',
+    'implementation("androidx.compose.ui:ui-tooling-preview")',
+    'implementation("androidx.compose.material3:material3")',
+    'implementation("androidx.compose.runtime:runtime")',
+    'implementation("androidx.compose.foundation:foundation")',
+    'implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")',
+    'debugImplementation("androidx.compose.ui:ui-tooling")'
+]
 
+if "dependencies {" in text:
+    pos = text.rfind("}")
+
+    block = "\n\n"
+    for dep in required:
+        if dep not in text:
+            block += "    " + dep + "\n"
+
+    text = text[:pos] + block + text[pos:]
+
+else:
+    text += "\n\ndependencies {\n"
+    for dep in required:
+        text += "    " + dep + "\n"
+    text += "}\n"
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
+
+      - name: Enable Compose
+        shell: bash
+        run: |
+          set -e
+
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+
+          if ! grep -q 'compose = true' "$APP"; then
+            python3 - "$APP" <<'PY'
+import sys
+
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+if "android {" in text and "compose = true" not in text:
+    text = text.replace(
+        "android {",
+        """android {
     buildFeatures {
         compose = true
     }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
-    }
 """,
-                  1
-              )
+        1
+    )
 
-          dependencies_block = r'''
-dependencies {
-
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-compose:1.10.1")
-
-    implementation(platform("androidx.compose:compose-bom:2025.02.00"))
-
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-
-    implementation("androidx.compose.material3:material3")
-
-    implementation("androidx.compose.runtime:runtime")
-
-    implementation("androidx.compose.foundation:foundation")
-
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-
-    debugImplementation("androidx.compose.ui:ui-tooling")
-}
-'''
-
-          # If dependencies block exists, append required dependencies.
-          if re.search(r'(?m)^\s*dependencies\s*\{', text):
-              match = re.search(
-                  r'(?ms)(^\s*dependencies\s*\{.*?^\s*\})',
-                  text
-              )
-
-              if match:
-                  old = match.group(1)
-
-                  required = [
-                      'implementation("androidx.core:core-ktx:1.15.0")',
-                      'implementation("androidx.activity:activity-compose:1.10.1")',
-                      'implementation(platform("androidx.compose:compose-bom:2025.02.00"))',
-                      'implementation("androidx.compose.ui:ui")',
-                      'implementation("androidx.compose.ui:ui-tooling-preview")',
-                      'implementation("androidx.compose.material3:material3")',
-                      'implementation("androidx.compose.runtime:runtime")',
-                      'implementation("androidx.compose.foundation:foundation")',
-                      'implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")',
-                      'debugImplementation("androidx.compose.ui:ui-tooling")'
-                  ]
-
-                  additions = []
-
-                  for dep in required:
-                      if dep not in old:
-                          additions.append("    " + dep)
-
-                  if additions:
-                      new = old[:-1] + "\n\n" + "\n".join(additions) + "\n}"
-                      text = text.replace(old, new, 1)
-
-          else:
-              text += "\n" + dependencies_block
-
-          with open(path, "w", encoding="utf-8") as f:
-              f.write(text)
-          PY
-
-          echo "===== APP BUILD AFTER ====="
-          cat "$APP"
-
-      - name: Fix SDK
-        shell: bash
-        run: |
-          set -e
-
-          APP="$PROJECT_DIR/app/build.gradle.kts"
-
-          sed -i \
-            's/targetSdk = 36/targetSdk = 35/' \
-            "$APP" || true
-
-          sed -i \
-            's/compileSdk = 36/compileSdk = 35/' \
-            "$APP" || true
-
-          sed -i \
-            's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/' \
-            "$APP" || true
-
-      - name: Configure AndroidX
-        shell: bash
-        run: |
-          set -e
-
-          P="$PROJECT_DIR"
-
-          touch "$P/gradle.properties"
-
-          grep -q '^android.useAndroidX=true' \
-            "$P/gradle.properties" || \
-            echo 'android.useAndroidX=true' >> "$P/gradle.properties"
-
-          grep -q '^android.enableJetifier=' \
-            "$P/gradle.properties" || \
-            echo 'android.enableJetifier=true' >> "$P/gradle.properties"
-
-          sed -i \
-            's/^org.gradle.configuration-cache=true$/org.gradle.configuration-cache=false/' \
-            "$P/gradle.properties"
-
-          grep -q '^org.gradle.configuration-cache=' \
-            "$P/gradle.properties" || \
-            echo 'org.gradle.configuration-cache=false' >> "$P/gradle.properties"
-
-      - name: Configure Supabase
-        shell: bash
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          set -e
-
-          P="$PROJECT_DIR"
-
-          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
-
-            printf \
-              'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
-              "$SUPABASE_URL" \
-              "$SUPABASE_ANON_KEY" > "$P/.env"
-
-            echo "Supabase configured."
-
-          elif [ -f "$P/.env.example" ]; then
-
-            cp "$P/.env.example" "$P/.env"
-
-            echo "Using .env.example."
-
-          else
-
-            touch "$P/.env"
-
-            echo "No Supabase configuration supplied."
-
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
           fi
 
-      - name: Setup Gradle 8.11.1
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
@@ -365,34 +241,30 @@ dependencies {
         run: |
           gradle --version
 
-      - name: Clean Project
+      - name: Clean
         shell: bash
         run: |
           set -e
-
           cd "$PROJECT_DIR"
 
           rm -rf .gradle
           rm -rf build
           rm -rf app/build
 
-          gradle \
+          gradle clean \
             --no-daemon \
             --no-configuration-cache \
-            clean \
             --stacktrace
 
       - name: Build Debug APK
         shell: bash
         run: |
           set -e
-
           cd "$PROJECT_DIR"
 
-          gradle \
+          gradle assembleDebug \
             --no-daemon \
             --no-configuration-cache \
-            assembleDebug \
             --stacktrace
 
       - name: Find APK
@@ -400,31 +272,22 @@ dependencies {
         run: |
           set -e
 
-          echo "===== APK ====="
-
-          find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" \
-            -print
-
-          APK=$(find \
-            "$PROJECT_DIR/app/build/outputs/apk/debug" \
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
             -type f \
             -name "*.apk" \
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK not generated."
+            echo "ERROR: APK not found"
+            find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
             exit 1
           fi
 
           mkdir -p apk-output
+          cp "$APK" apk-output/TEST-MITRA-debug.apk
 
-          cp "$APK" \
-            apk-output/TEST-MITRA-debug.apk
-
-          echo "APK READY:"
-          echo "$APK"
+          echo "APK CREATED:"
+          ls -lh apk-output/TEST-MITRA-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
