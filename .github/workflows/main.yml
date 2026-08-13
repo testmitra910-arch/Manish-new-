@@ -38,8 +38,6 @@ jobs:
             exit 1
           fi
 
-          echo "ZIP found: $ZIP"
-
           rm -rf extracted
           mkdir -p extracted
 
@@ -59,124 +57,105 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Project:"
+          echo "Project found:"
           echo "$PROJECT_DIR"
 
-      - name: Fix Gradle configuration
+      - name: Fix Gradle files
         shell: bash
         run: |
           set -e
 
           P="$PROJECT_DIR"
 
-          echo "Checking project..."
+          echo "Fixing Gradle configuration..."
 
-          if [ -f "$P/gradle/libs.versions.toml" ]; then
-
-            sed -i 's/agp = "9\.1\.1"/agp = "8.9.2"/g' \
-              "$P/gradle/libs.versions.toml"
-
-            echo "AGP adjusted."
-
-          fi
+          # ------------------------------------------------
+          # Remove KSP plugin
+          # ------------------------------------------------
 
           if [ -f "$P/app/build.gradle.kts" ]; then
 
             sed -i \
-              's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 35/g' \
+              '/com.google.devtools.ksp/d' \
               "$P/app/build.gradle.kts"
 
+            # Remove EVERY line containing ksp(...)
             sed -i \
-              's/targetSdk = 36/targetSdk = 35/g' \
+              '/ksp[[:space:]]*(/d' \
               "$P/app/build.gradle.kts"
 
-            # Remove broken Google Services strategy
+            # Remove EVERY dependency line using ksp
+            sed -i \
+              '/^[[:space:]]*ksp[[:space:]]*"/d' \
+              "$P/app/build.gradle.kts"
+
+            # Remove ksp blocks
+            sed -i \
+              '/^[[:space:]]*ksp[[:space:]]*{/d' \
+              "$P/app/build.gradle.kts"
+
+          fi
+
+          # ------------------------------------------------
+          # Remove broken googleServices configuration
+          # ------------------------------------------------
+
+          if [ -f "$P/app/build.gradle.kts" ]; then
+
             sed -i \
               '/MissingGoogleServicesStrategy/d' \
               "$P/app/build.gradle.kts"
 
             sed -i \
-              '/^[[:space:]]*googleServices[[:space:]]*{/d' \
+              '/googleServices[[:space:]]*{/d' \
               "$P/app/build.gradle.kts"
 
-            echo "app/build.gradle.kts adjusted."
-
           fi
+
+          # ------------------------------------------------
+          # Gradle properties
+          # ------------------------------------------------
 
           touch "$P/gradle.properties"
 
-          grep -q '^android.useAndroidX=' "$P/gradle.properties" \
-            || echo 'android.useAndroidX=true' >> "$P/gradle.properties"
+          if ! grep -q '^android.useAndroidX=' "$P/gradle.properties"; then
+            echo 'android.useAndroidX=true' >> "$P/gradle.properties"
+          fi
 
-          grep -q '^android.enableJetifier=' "$P/gradle.properties" \
-            || echo 'android.enableJetifier=true' >> "$P/gradle.properties"
+          if ! grep -q '^android.enableJetifier=' "$P/gradle.properties"; then
+            echo 'android.enableJetifier=true' >> "$P/gradle.properties"
+          fi
 
+          # Disable configuration cache
           sed -i \
-            's/^org.gradle.configuration-cache=true$/org.gradle.configuration-cache=false/' \
+            '/^org.gradle.configuration-cache=/d' \
             "$P/gradle.properties"
 
-          grep -q '^org.gradle.configuration-cache=' "$P/gradle.properties" \
-            || echo 'org.gradle.configuration-cache=false' >> "$P/gradle.properties"
+          echo 'org.gradle.configuration-cache=false' \
+            >> "$P/gradle.properties"
 
-      - name: Remove KSP plugin from app
+          echo "Gradle files fixed."
+
+      - name: Verify KSP is removed
         shell: bash
         run: |
           set -e
 
           P="$PROJECT_DIR"
 
-          if [ -f "$P/app/build.gradle.kts" ]; then
+          echo "Searching for remaining KSP references..."
 
-            sed -i \
-              '/id[[:space:]]*(["'\'']com.google.devtools.ksp["'\''])/d' \
-              "$P/app/build.gradle.kts"
+          if grep -RniE \
+            'com\.google\.devtools\.ksp|[^A-Za-z]ksp[[:space:]]*\(' \
+            "$P/app/build.gradle.kts"; then
 
-            sed -i \
-              '/alias[[:space:]]*(.*ksp.*)/d' \
-              "$P/app/build.gradle.kts"
-
-            sed -i \
-              '/^[[:space:]]*ksp[[:space:]]*{/d' \
-              "$P/app/build.gradle.kts"
-
-            echo "KSP plugin configuration removed from app."
+            echo ""
+            echo "ERROR: KSP reference still exists."
+            exit 1
 
           fi
 
-      - name: Remove KSP dependencies
-        shell: bash
-        run: |
-          set -e
-
-          P="$PROJECT_DIR"
-
-          if [ -f "$P/app/build.gradle.kts" ]; then
-
-            sed -i \
-              '/^[[:space:]]*ksp[[:space:]]*(/d' \
-              "$P/app/build.gradle.kts"
-
-            sed -i \
-              '/^[[:space:]]*ksp[[:space:]]*"/d' \
-              "$P/app/build.gradle.kts"
-
-            echo "KSP dependencies cleaned."
-
-          fi
-
-      - name: Show Gradle files
-        shell: bash
-        run: |
-          echo "===== PROJECT ====="
-          find "$PROJECT_DIR" -maxdepth 3 -type f \
-            \( -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.toml" \) \
-            | sort
-
-          echo "===== APP BUILD FILE ====="
-
-          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            cat "$PROJECT_DIR/app/build.gradle.kts"
-          fi
+          echo "KSP references successfully removed."
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -186,6 +165,8 @@ jobs:
       - name: Clean
         shell: bash
         run: |
+          set -e
+
           cd "$PROJECT_DIR"
 
           rm -rf .gradle
@@ -199,9 +180,9 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          if [ -f "./gradlew" ]; then
+          chmod +x ./gradlew 2>/dev/null || true
 
-            chmod +x ./gradlew
+          if [ -f "./gradlew" ]; then
 
             ./gradlew \
               --no-daemon \
@@ -232,7 +213,7 @@ jobs:
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK not found."
             exit 1
           fi
 
@@ -240,9 +221,11 @@ jobs:
 
           cp "$APK" apk-output/TEST-MITRA-debug.apk
 
-          echo "================================"
-          echo "APK BUILD SUCCESSFUL"
-          echo "================================"
+          echo ""
+          echo "======================================"
+          echo "       APK BUILD SUCCESSFUL"
+          echo "======================================"
+          echo ""
 
           ls -lh apk-output/TEST-MITRA-debug.apk
 
